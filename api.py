@@ -9,6 +9,7 @@ import librosa
 from text import text_to_sequence
 from mel_processing import spectrogram_torch
 from models import SynthesizerTrn
+import oss as ossUtil
 
 
 class OpenVoiceBaseClass(object):
@@ -134,8 +135,10 @@ class ToneColorConverter(OpenVoiceBaseClass):
         if se_save_path is not None:
             os.makedirs(os.path.dirname(se_save_path), exist_ok=True)
             torch.save(gs.cpu(), se_save_path)
+            ossUtil.upload_bytes()
+            return oss_object_url
 
-        return gs
+        return ""
 
     def convert(self, audio_src_path, src_se, tgt_se, output_path=None, tau=0.3, message="default"):
         hps = self.hps
@@ -156,6 +159,29 @@ class ToneColorConverter(OpenVoiceBaseClass):
             if output_path is None:
                 return audio
             else:
+                //返回流
+                soundfile.write(output_path, audio, hps.data.sampling_rate)
+    
+    def convertToSpeech(self, audio_src_path, src_se, tgt_se, output_path=None, tau=0.3, message="default"):
+        hps = self.hps
+        # load audio
+        audio, sample_rate = librosa.load(audio_src_path, sr=hps.data.sampling_rate)
+        audio = torch.tensor(audio).float()
+        
+        with torch.no_grad():
+            y = torch.FloatTensor(audio).to(self.device)
+            y = y.unsqueeze(0)
+            spec = spectrogram_torch(y, hps.data.filter_length,
+                                    hps.data.sampling_rate, hps.data.hop_length, hps.data.win_length,
+                                    center=False).to(self.device)
+            spec_lengths = torch.LongTensor([spec.size(-1)]).to(self.device)
+            audio = self.model.voice_conversion(spec, spec_lengths, sid_src=src_se, sid_tgt=tgt_se, tau=tau)[0][
+                        0, 0].data.cpu().float().numpy()
+            audio = self.add_watermark(audio, message)
+            if output_path is None:
+                return audio
+            else:
+                //返回流
                 soundfile.write(output_path, audio, hps.data.sampling_rate)
     
     def add_watermark(self, audio, message):
