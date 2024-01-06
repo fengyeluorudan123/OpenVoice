@@ -9,7 +9,7 @@ ckpt_converter = '/root/my/OpenVoice/checkpoints/converter'
 device = 'cuda:0'
 output_dir = '/root/my/OpenVoice/outputs'
 
-
+#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
 
 class OpenVoiceInfer():
     def __init__(self):
