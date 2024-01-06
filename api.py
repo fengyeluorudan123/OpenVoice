@@ -2,20 +2,22 @@ import torch
 import numpy as np
 import re
 import soundfile
+import uuid
 import utils
 import commons
 import os
 import librosa
+from io import BytesIO
 from text import text_to_sequence
 from mel_processing import spectrogram_torch
 from models import SynthesizerTrn
-import oss as ossUtil
+from oss import OSSUtil
 
 
 class OpenVoiceBaseClass(object):
-    def __init__(self, 
-                config_path, 
-                device='cuda:0'):
+    def __init__(self,
+                 config_path,
+                 device='cuda:0'):
         if 'cuda' in device:
             assert torch.cuda.is_available()
 
@@ -59,7 +61,7 @@ class BaseSpeakerTTS(OpenVoiceBaseClass):
         audio_segments = []
         for segment_data in segment_data_list:
             audio_segments += segment_data.reshape(-1).tolist()
-            audio_segments += [0] * int((sr * 0.05)/speed)
+            audio_segments += [0] * int((sr * 0.05) / speed)
         audio_segments = np.array(audio_segments).astype(np.float32)
         return audio_segments
 
@@ -89,7 +91,7 @@ class BaseSpeakerTTS(OpenVoiceBaseClass):
                 x_tst_lengths = torch.LongTensor([stn_tst.size(0)]).to(device)
                 sid = torch.LongTensor([speaker_id]).to(device)
                 audio = self.model.infer(x_tst, x_tst_lengths, sid=sid, noise_scale=0.667, noise_scale_w=0.6,
-                                    length_scale=1.0 / speed)[0][0, 0].data.cpu().float().numpy()
+                                         length_scale=1.0 / speed)[0][0, 0].data.cpu().float().numpy()
             audio_list.append(audio)
         audio = self.audio_numpy_concat(audio_list, sr=self.hps.data.sampling_rate, speed=speed)
 
@@ -104,39 +106,48 @@ class ToneColorConverter(OpenVoiceBaseClass):
         super().__init__(*args, **kwargs)
 
         if kwargs.get('enable_watermark', True):
-            import wavmark
-            self.watermark_model = wavmark.load_model().to(self.device)
+            # import wavmark
+            self.watermark_model = None
         else:
             self.watermark_model = None
-
-
 
     def extract_se(self, ref_wav_list, se_save_path=None):
         if isinstance(ref_wav_list, str):
             ref_wav_list = [ref_wav_list]
-        
+
         device = self.device
         hps = self.hps
         gs = []
-        
+
         for fname in ref_wav_list:
             audio_ref, sr = librosa.load(fname, sr=hps.data.sampling_rate)
             y = torch.FloatTensor(audio_ref)
             y = y.to(device)
             y = y.unsqueeze(0)
             y = spectrogram_torch(y, hps.data.filter_length,
-                                        hps.data.sampling_rate, hps.data.hop_length, hps.data.win_length,
-                                        center=False).to(device)
+                                  hps.data.sampling_rate, hps.data.hop_length, hps.data.win_length,
+                                  center=False).to(device)
             with torch.no_grad():
                 g = self.model.ref_enc(y.transpose(1, 2)).unsqueeze(-1)
                 gs.append(g.detach())
         gs = torch.stack(gs).mean(0)
 
         if se_save_path is not None:
-            os.makedirs(os.path.dirname(se_save_path), exist_ok=True)
-            torch.save(gs.cpu(), se_save_path)
-            ossUtil.upload_bytes()
-            return oss_object_url
+            # os.makedirs(os.path.dirname(se_save_path), exist_ok=True)
+            buffer = BytesIO()
+            torch.save(gs.cpu(), buffer)
+            buffer.seek(0)  # Rewind to the start of the BytesIO object
+
+            # 生成要存储的文件名称
+            access_key_id = 'LTAI5tLiMuempJBF6vis3WWW'
+            access_key_secret = 'zSRNWh9ypFPRUgSSdyt5ni5khUyt6K'
+            endpoint = 'oss-cn-beijing.aliyuncs.com'
+            bucket_name = 'fengyeluo'
+            oss_util = OSSUtil(access_key_id, access_key_secret, endpoint, bucket_name)
+            uploaded_url = oss_util.upload_bytes(buffer.getvalue(), f'openvoice/yinse/{se_save_path}')
+            print('uploaded_url' + uploaded_url)
+            return uploaded_url
+            print(uploaded_url)
 
         return ""
 
@@ -145,45 +156,43 @@ class ToneColorConverter(OpenVoiceBaseClass):
         # load audio
         audio, sample_rate = librosa.load(audio_src_path, sr=hps.data.sampling_rate)
         audio = torch.tensor(audio).float()
-        
+
         with torch.no_grad():
             y = torch.FloatTensor(audio).to(self.device)
             y = y.unsqueeze(0)
             spec = spectrogram_torch(y, hps.data.filter_length,
-                                    hps.data.sampling_rate, hps.data.hop_length, hps.data.win_length,
-                                    center=False).to(self.device)
+                                     hps.data.sampling_rate, hps.data.hop_length, hps.data.win_length,
+                                     center=False).to(self.device)
             spec_lengths = torch.LongTensor([spec.size(-1)]).to(self.device)
             audio = self.model.voice_conversion(spec, spec_lengths, sid_src=src_se, sid_tgt=tgt_se, tau=tau)[0][
-                        0, 0].data.cpu().float().numpy()
+                0, 0].data.cpu().float().numpy()
             audio = self.add_watermark(audio, message)
             if output_path is None:
                 return audio
             else:
-                //返回流
                 soundfile.write(output_path, audio, hps.data.sampling_rate)
-    
+
     def convertToSpeech(self, audio_src_path, src_se, tgt_se, output_path=None, tau=0.3, message="default"):
         hps = self.hps
         # load audio
         audio, sample_rate = librosa.load(audio_src_path, sr=hps.data.sampling_rate)
         audio = torch.tensor(audio).float()
-        
+
         with torch.no_grad():
             y = torch.FloatTensor(audio).to(self.device)
             y = y.unsqueeze(0)
             spec = spectrogram_torch(y, hps.data.filter_length,
-                                    hps.data.sampling_rate, hps.data.hop_length, hps.data.win_length,
-                                    center=False).to(self.device)
+                                     hps.data.sampling_rate, hps.data.hop_length, hps.data.win_length,
+                                     center=False).to(self.device)
             spec_lengths = torch.LongTensor([spec.size(-1)]).to(self.device)
             audio = self.model.voice_conversion(spec, spec_lengths, sid_src=src_se, sid_tgt=tgt_se, tau=tau)[0][
-                        0, 0].data.cpu().float().numpy()
+                0, 0].data.cpu().float().numpy()
             audio = self.add_watermark(audio, message)
             if output_path is None:
                 return audio
             else:
-                //返回流
                 soundfile.write(output_path, audio, hps.data.sampling_rate)
-    
+
     def add_watermark(self, audio, message):
         if self.watermark_model is None:
             return audio
@@ -199,7 +208,7 @@ class ToneColorConverter(OpenVoiceBaseClass):
                 print('Audio too short, fail to add watermark')
                 break
             message_npy = bits[n * 32: (n + 1) * 32]
-            
+
             with torch.no_grad():
                 signal = torch.FloatTensor(trunck).to(device)[None]
                 message_tensor = torch.FloatTensor(message_npy).to(device)[None]
@@ -219,9 +228,10 @@ class ToneColorConverter(OpenVoiceBaseClass):
                 return 'Fail'
             with torch.no_grad():
                 signal = torch.FloatTensor(trunck).to(self.device).unsqueeze(0)
-                message_decoded_npy = (self.watermark_model.decode(signal) >= 0.5).int().detach().cpu().numpy().squeeze()
+                message_decoded_npy = (
+                            self.watermark_model.decode(signal) >= 0.5).int().detach().cpu().numpy().squeeze()
             bits.append(message_decoded_npy)
         bits = np.stack(bits).reshape(-1, 8)
         message = utils.bits_to_string(bits)
         return message
-    
+
