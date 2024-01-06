@@ -2,6 +2,7 @@ import os
 import torch
 import se_extractor
 from api import BaseSpeakerTTS, ToneColorConverter
+from oss import OSSUtil
 
 ckpt_base = '/home/admin/workspace/aop_lab/app_source/OpenVoice/checkpoints/base_speakers/EN'
 ckpt_converter = '/home/admin/workspace/aop_lab/app_source/OpenVoice/checkpoints/converter'
@@ -18,7 +19,8 @@ class OpenVoiceInfer():
 
     def forward(self, yinsepth, text, style):
         # 从oss下载这个文件的byte流到本地
-
+        oss_util = OSSUtil(self.access_key_id, self.access_key_secret, self.endpoint, self.bucket_name)
+        file = oss_util.download_to_temp_file(yinsepth)
         print(1)
 
         ckpt_base = '/root/OpenVoice/checkpoints/base_speakers/EN'
@@ -42,7 +44,7 @@ class OpenVoiceInfer():
         source_se = torch.load(f'{ckpt_base}/en_default_se.pth').to(device)
         # 给一段参考的mp3
         # target_se, audio_name = se_extractor.get_se(reference_speaker, tone_color_converter, target_dir='processed', vad=True)
-        target_se = torch.load(yinsepth, map_location=device)
+        target_se = torch.load(file, map_location=device)
 
         save_path = f'{output_dir}/output_en_default.wav'
         # 用户输入文字以及用户名
